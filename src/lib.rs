@@ -7,16 +7,25 @@
 //!
 //! Messages are published as bytes, it is responsibility of the user to perform the encoding and decoding.
 use dashmap::DashMap;
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    pin::Pin,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, ready},
 };
-use tokio::sync::broadcast;
+use tokio::{
+    pin,
+    sync::broadcast::{self, error::RecvError},
+};
+use tokio_stream::Stream;
 
 const TOPIC_CAPACITY: usize = 20;
 
-type Rx = broadcast::Receiver<Arc<[u8]>>;
-type Tx = broadcast::Sender<Arc<[u8]>>;
+type Payload = Arc<[u8]>;
+type Rx = broadcast::Receiver<Payload>;
+type Tx = broadcast::Sender<Payload>;
 
 /// Represents a single topic.
 /// Contains information about how many subscribers it has and the inner broadcast sender & receivers
@@ -34,6 +43,10 @@ struct Topic {
 struct TopicMap(DashMap<String, Topic>);
 
 impl TopicMap {
+    fn new() -> Self {
+        Self(DashMap::new())
+    }
+
     fn get_sender(&self, topic_name: &str) -> Option<Tx> {
         self.0.get(topic_name).map(|topic| topic.sender.clone())
     }
@@ -74,10 +87,44 @@ impl TopicMap {
     }
 }
 
+/// Holds a subscription to a topic.
+///
+/// When the subscription is dropped,
+/// the parent topic might be deallocated from memory if no other subscriptions to it exist.
+///
+/// `Subscription` implements `Stream`, which means that the user can consume it as a stream
+/// to listen for incoming messages.
 pub struct Subscription {
     topic: Arc<str>,
     inner_topics: Weak<TopicMap>,
-    receiver: Rx,
+    rx: Rx,
+}
+
+/// An error returned from the subscription stream.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SubscriptionStreamRecvError {
+    /// The receiver lagged too far behind. Attempting to receive again will
+    /// return the oldest message still retained by the channel.
+    ///
+    /// Includes the number of skipped messages.
+    Lagged(u64),
+}
+
+impl Stream for Subscription {
+    type Item = Result<Payload, SubscriptionStreamRecvError>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let fut = self.rx.recv();
+        pin!(fut);
+        let result = ready!(fut.poll(cx));
+
+        match result {
+            Ok(item) => Poll::Ready(Some(Ok(item))),
+            Err(RecvError::Closed) => Poll::Ready(None),
+            Err(RecvError::Lagged(n)) => {
+                Poll::Ready(Some(Err(SubscriptionStreamRecvError::Lagged(n))))
+            }
+        }
+    }
 }
 
 impl Drop for Subscription {
@@ -91,7 +138,7 @@ impl Drop for Subscription {
 #[derive(thiserror::Error, Debug)]
 pub enum PublishError {
     #[error("Failed to publish message to topic: '{0}': '{1}")]
-    BroadcastError(Arc<str>, broadcast::error::SendError<Arc<[u8]>>),
+    BroadcastError(Arc<str>, broadcast::error::SendError<Payload>),
 }
 
 /// A thread-safe event bus.
@@ -99,11 +146,19 @@ pub enum PublishError {
 /// Users can subscribe to topics and publish to them.
 ///
 /// When all the subscriptions to a topic get dropped, the topic itself is dropped from memory.
+#[derive(Clone)]
 pub struct EventBus {
     topics: Arc<TopicMap>,
 }
 
 impl EventBus {
+    /// EventBus main constructor.
+    pub fn new() -> Self {
+        Self {
+            topics: Arc::new(TopicMap::new()),
+        }
+    }
+
     /// Subscribes to a topic and returns a `Subscription`.
     ///
     /// This operation will never fail, if the topic doesn't exist it gets internally created.
@@ -115,7 +170,7 @@ impl EventBus {
         Subscription {
             topic: topic.into(),
             inner_topics: Arc::downgrade(&self.topics),
-            receiver: rx,
+            rx,
         }
     }
 

@@ -34,9 +34,7 @@ use futures::StreamExt;
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder()
-          .with_topic_capacity(50)
-          .build();
+    let bus = EventBus::new_with_topic_capacity(50);
 
     // Subscribe to a topic
     let mut sub = bus.subscribe("my_topic");

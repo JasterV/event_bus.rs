@@ -1,0 +1,51 @@
+[config]
+default_to_workspace = false
+
+[tasks.build]
+description = "Build binaries"
+command = "cargo"
+args = ["build", "--workspace", "--all-features"]
+
+[tasks.clippy]
+description = "Runs clippy."
+clear = true
+command = "cargo"
+args = [
+  "clippy",
+  "--all-targets",
+  "--all-features",
+  "--workspace",
+  "--",
+  "-D",
+  "warnings",
+  "-W",
+  "clippy::dbg_macro",
+]
+
+[tasks.fmt-check]
+description = "Runs the cargo rustfmt plugin during CI."
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.deny-check]
+description = "Runs the cargo deny plugin during CI."
+command = "cargo"
+args = ["deny", "check"]
+
+[tasks.test]
+description = "Runs tests."
+clear = true
+run_task = { name = [
+  "doc-tests",
+  "nextest",
+], fork = true }
+
+[tasks.nextest]
+description = "Runs tests without dependencies."
+command = "cargo"
+args = ["nextest", "run", "--no-fail-fast", "${@}"]
+
+[tasks.doc-tests]
+description = "Run doc tests"
+command = "cargo"
+args = ["test", "--doc"]

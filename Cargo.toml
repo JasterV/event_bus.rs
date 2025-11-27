@@ -1,5 +1,5 @@
 [package]
-name = "event_bus"
+name = "event_bus_rs"
 version = "0.1.0"
 edition = "2024"
 

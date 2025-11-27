@@ -44,19 +44,12 @@ async fn main() {
     // Spawn a subscriber task
     tokio::spawn(async move {
         while let Some(msg) = sub.next().await {
-            match msg {
-                Ok(payload) => {
-                    println!("Received: {}", String::from_utf8_lossy(&payload));
-                }
-                Err(err) => {
-                    eprintln!("Error receiving message: {:?}", err);
-                }
-            }
+            println!("Received: {}", String::from_utf8_lossy(&msg));
         }
     });
 
     // Publish a message
-    bus.publish("my_topic", b"Hello, EventBus!").await.unwrap();
+    bus.publish("my_topic", b"Hello, EventBus!").unwrap();
 }
 ```
 

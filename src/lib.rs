@@ -1,4 +1,4 @@
-//! An implementation of a thread-safe event bus.
+//! Runtime agnostic async implementation of a thread-safe event bus.
 //!
 //! It provides the following features:
 //!
@@ -6,26 +6,23 @@
 //! - Users can subscribe a topic and listen for incoming events.
 //!
 //! Messages are published as bytes, it is responsibility of the user to perform the encoding and decoding.
+use async_broadcast::{Receiver, Sender, broadcast};
 use dashmap::DashMap;
+use futures::Stream;
 use std::{
     pin::Pin,
     sync::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll, ready},
-};
-use tokio::sync::broadcast;
-use tokio_stream::{
-    Stream,
-    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
+    task::{Context, Poll},
 };
 
-const TOPIC_CAPACITY: usize = 20;
+const DEFAULT_TOPIC_CAPACITY: usize = 1000;
 
 type Payload = Arc<[u8]>;
-type Rx = broadcast::Receiver<Payload>;
-type Tx = broadcast::Sender<Payload>;
+type Tx = Sender<Payload>;
+type Rx = Receiver<Payload>;
 
 /// Represents a single topic.
 /// Contains information about how many subscribers it has and the inner broadcast sender & receivers
@@ -39,56 +36,59 @@ struct Topic {
 /// It contains the logic that understands when to create or delete a topic.
 ///
 /// It makes use of a concurrent map that can be safely shared between threads.
-struct TopicMap(DashMap<String, Topic>);
+struct TopicMap {
+    inner: DashMap<String, Topic>,
+    topic_capacity: usize,
+}
 
 impl TopicMap {
-    fn new() -> Self {
-        Self(DashMap::new())
+    fn new(topic_capacity: usize) -> Self {
+        Self {
+            inner: DashMap::new(),
+            topic_capacity,
+        }
     }
 
     fn get_sender(&self, topic_name: &str) -> Option<Tx> {
-        self.0.get(topic_name).map(|topic| topic.sender.clone())
+        self.inner.get(topic_name).map(|topic| topic.sender.clone())
     }
 
     fn new_subscriber(&self, topic_name: &str) -> Rx {
-        if let Some(topic) = self.0.get(topic_name) {
+        if let Some(topic) = self.inner.get(topic_name) {
             topic
                 .subscribers
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            return topic.sender.subscribe();
+            return topic.sender.new_receiver();
         }
 
-        let (tx, rx) = broadcast::channel(TOPIC_CAPACITY);
+        let (tx, rx) = broadcast::<Payload>(self.topic_capacity);
 
         let topic = Topic {
             subscribers: AtomicUsize::new(1),
             sender: tx,
         };
 
-        self.0.insert(topic_name.to_string(), topic);
+        self.inner.insert(topic_name.to_string(), topic);
 
         rx
     }
 
     fn remove_subscriber(&self, topic_name: &str) {
-        // scope the guard so it drops before we call `remove`
-        let should_remove = {
-            let Some(topic_ref) = self.0.get(topic_name) else {
+        // Scope the guard so it drops before we call `remove`.
+        //
+        // This is done because trying to call `remove` while we hold a read guard
+        // from the DashMap will result in a deadlock.
+        let subscribers_count = {
+            let Some(topic_ref) = self.inner.get(topic_name) else {
                 return;
             };
 
-            // decrement and decide if we need to remove the topic
-            let prev = topic_ref.subscribers.fetch_sub(1, Ordering::Relaxed);
-            prev <= 1
-            // `topic_ref` is dropped here at the end of the block!
+            topic_ref.subscribers.fetch_sub(1, Ordering::Relaxed)
         };
 
-        if should_remove {
-            if let Some((_, topic)) = self.0.remove(topic_name) {
-                // explicitly drop the sender (optional - remove already drops it)
-                drop(topic.sender);
-            }
+        if subscribers_count <= 1 {
+            let _ = self.inner.remove(topic_name);
         }
     }
 }
@@ -109,34 +109,17 @@ impl TopicMap {
 pub struct Subscription {
     topic: Arc<str>,
     inner_topics: Weak<TopicMap>,
-    stream: BroadcastStream<Payload>,
-}
-
-/// An error returned from the subscription stream.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SubscriptionStreamRecvError {
-    /// The receiver lagged too far behind. Attempting to receive again will
-    /// return the oldest message still retained by the channel.
-    ///
-    /// Includes the number of skipped messages.
-    Lagged(u64),
+    rx: Rx,
 }
 
 impl Stream for Subscription {
-    type Item = Result<Payload, SubscriptionStreamRecvError>;
+    type Item = Payload;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Delegate polling to the inner BroadcastStream
-        let item = ready!(Pin::new(&mut self.stream).poll_next(cx));
-
-        match item {
-            Some(Ok(payload)) => Poll::Ready(Some(Ok(payload))),
-
-            Some(Err(BroadcastStreamRecvError::Lagged(n))) => {
-                Poll::Ready(Some(Err(SubscriptionStreamRecvError::Lagged(n))))
-            }
-
-            None => Poll::Ready(None),
+        match Pin::new(&mut self.rx).poll_next(cx) {
+            Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -149,10 +132,41 @@ impl Drop for Subscription {
     }
 }
 
+/// Error type returned by the `publish` method.
 #[derive(thiserror::Error, Debug)]
 pub enum PublishError {
-    #[error("Failed to publish message to topic: '{0}': '{1}")]
-    BroadcastError(Arc<str>, broadcast::error::SendError<Payload>),
+    #[error("Failed to publish message to topic, it was unexpectedly closed: '{0}'")]
+    ChannelClosed(Arc<str>),
+    #[error(
+        "Failed to publish message to topic, the topic is full and can't handle more messages: '{0}'"
+    )]
+    CapacityOverflow(Arc<str>),
+}
+
+/// EventBus builder.
+///
+/// It is used to configure the event bus before building it.
+pub struct EventBusBuilder {
+    /// Topics are bounded to a capacity, if the capacity is overflown, messages can't be published.
+    topic_capacity: usize,
+}
+
+impl EventBusBuilder {
+    pub fn new() -> Self {
+        Self {
+            topic_capacity: DEFAULT_TOPIC_CAPACITY,
+        }
+    }
+
+    pub fn with_topic_capacity(self, topic_capacity: usize) -> Self {
+        Self { topic_capacity }
+    }
+
+    pub fn build(self) -> EventBus {
+        EventBus {
+            topics: Arc::new(TopicMap::new(self.topic_capacity)),
+        }
+    }
 }
 
 /// A thread-safe event bus.
@@ -166,13 +180,6 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    /// EventBus main constructor.
-    pub fn new() -> Self {
-        Self {
-            topics: Arc::new(TopicMap::new()),
-        }
-    }
-
     /// Subscribes to a topic and returns a `Subscription`.
     ///
     /// This operation will never fail, if the topic doesn't exist it gets internally created.
@@ -184,7 +191,7 @@ impl EventBus {
         Subscription {
             topic: topic.into(),
             inner_topics: Arc::downgrade(&self.topics),
-            stream: BroadcastStream::new(rx),
+            rx,
         }
     }
 
@@ -197,35 +204,38 @@ impl EventBus {
             return Ok(());
         };
 
-        let _ = sx
-            .send(Arc::from(data))
-            .map_err(|err| PublishError::BroadcastError(topic.into(), err))?;
+        let result = sx.try_broadcast(Arc::from(data));
 
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            // There are no active receivers, we do not consider this an error
+            Err(async_broadcast::TrySendError::Inactive(_)) => Ok(()),
+            // The channel is closed, we return an error as this is unexpected
+            Err(async_broadcast::TrySendError::Closed(_)) => {
+                Err(PublishError::ChannelClosed(topic.into()))
+            }
+            // The channel is overflown, we return an error
+            Err(async_broadcast::TrySendError::Full(_)) => {
+                Err(PublishError::CapacityOverflow(topic.into()))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_stream::StreamExt;
+    use futures::StreamExt;
 
     // Helper function to safely extract a message from a stream
-    async fn get_next_message(
-        sub: &mut Subscription,
-    ) -> Result<String, SubscriptionStreamRecvError> {
-        let result = sub
-            .next()
-            .await
-            .expect("Stream unexpectedly closed")
-            .map(|payload| String::from_utf8_lossy(&payload).to_string());
-
-        result
+    async fn get_next_message(sub: &mut Subscription) -> String {
+        let payload = sub.next().await.expect("Stream unexpectedly closed");
+        String::from_utf8_lossy(&payload).to_string()
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_simple_pub_sub() {
-        let event_bus = EventBus::new();
+        let event_bus = EventBusBuilder::new().build();
         let topic = "test_simple";
         let expected_message = "Hello EventBus";
 
@@ -233,15 +243,13 @@ mod tests {
 
         let task_handle = tokio::spawn(async move { get_next_message(&mut subscription).await });
 
-        // 3. Publish the message. This happens after the receiver is active.
         event_bus
             .publish(topic, expected_message.as_bytes())
             .unwrap();
 
         let received = task_handle
             .await
-            .expect("Failed to receive result from task")
-            .unwrap();
+            .expect("Failed to receive result from task");
 
         assert_eq!(received, expected_message);
     }

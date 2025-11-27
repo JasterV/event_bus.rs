@@ -65,7 +65,7 @@ async fn main() {
 * `EventBus::builder() -> EventBusBuilder` – create a new bus builder
 * `EventBus::subscribe(&self, topic: &str) -> Subscription` – subscribe to a topic
 * `EventBus::publish(&self, topic: &str, data: &[u8]) -> Result<(), PublishError>` – publish a message
-* `Subscription` implements `futures::Stream<Item = Result<Payload, SubscriptionStreamRecvError>>`
+* `Subscription` implements `futures::Stream<Item = Arc<[u8]>>`
 
 ---
 

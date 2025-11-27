@@ -1,3 +1,9 @@
+//! This module provides an RcMap (Or ReferenceCountMap) which is a map that keeps track of how many references of a value in a pair exist.
+//!
+//! Every time someone gets a value by key, that value's reference counter increases.
+//! When a reference to a value is dropped, the reference counter decreases.
+//!
+//! When the references counter of a value hits 0, the whole pair is removed from the map.
 use dashmap::DashMap;
 use std::{
     hash::Hash,
@@ -7,6 +13,9 @@ use std::{
     },
 };
 
+/// A smart reference around a key value pair.
+///
+/// Once it is dropped, it will decrease the reference counter of the pair and potentially remove the pair if the counter hits 0.
 #[derive(Clone)]
 pub struct ObjectRef<K, V>
 where
@@ -46,6 +55,12 @@ where
     }
 }
 
+/// A ReferenceCountMap.
+///
+/// It exposes get and insert operations.
+///
+/// The insert operation always returns an `ObjectRef` to the inserted value.
+/// If that object is dropped and no other references existed to that pair, the pair is cleaned up.
 #[derive(Clone)]
 pub struct RcMap<K, V> {
     inner: Arc<DashMap<K, (AtomicIsize, V)>>,

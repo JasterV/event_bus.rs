@@ -72,15 +72,22 @@ impl TopicMap {
     }
 
     fn remove_subscriber(&self, topic_name: &str) {
-        let Some(topic) = self.0.get(topic_name) else {
-            return ();
+        // scope the guard so it drops before we call `remove`
+        let should_remove = {
+            let Some(topic_ref) = self.0.get(topic_name) else {
+                return;
+            };
+
+            // decrement and decide if we need to remove the topic
+            let prev = topic_ref.subscribers.fetch_sub(1, Ordering::Relaxed);
+            prev <= 1
+            // `topic_ref` is dropped here at the end of the block!
         };
 
-        let count = topic.subscribers.fetch_sub(1, Ordering::Relaxed);
-
-        if count <= 1 {
+        if should_remove {
             if let Some((_, topic)) = self.0.remove(topic_name) {
-                drop(topic.sender)
+                // explicitly drop the sender (optional - remove already drops it)
+                drop(topic.sender);
             }
         }
     }
@@ -201,7 +208,6 @@ impl EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::oneshot;
     use tokio_stream::StreamExt;
 
     // Helper function to safely extract a message from a stream
@@ -225,26 +231,18 @@ mod tests {
 
         let mut subscription = event_bus.subscribe(topic);
 
-        // Communication: Channel to receive the final result from the subscriber
-        let (result_tx, result_rx) = oneshot::channel();
-
-        tokio::spawn(async move {
-            let result = get_next_message(&mut subscription).await;
-            result_tx.send(result).expect("failed to send");
-        });
+        let task_handle = tokio::spawn(async move { get_next_message(&mut subscription).await });
 
         // 3. Publish the message. This happens after the receiver is active.
         event_bus
             .publish(topic, expected_message.as_bytes())
             .unwrap();
 
-        let received_result = result_rx.await.expect("Failed to receive result from task");
-        let received = received_result.unwrap();
-
-        println!("RECEIVEEED: {received}, {expected_message}");
+        let received = task_handle
+            .await
+            .expect("Failed to receive result from task")
+            .unwrap();
 
         assert_eq!(received, expected_message);
-
-        println!("The test never exits...");
     }
 }

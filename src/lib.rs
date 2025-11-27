@@ -15,11 +15,11 @@ use std::{
     },
     task::{Context, Poll, ready},
 };
-use tokio::{
-    pin,
-    sync::broadcast::{self, error::RecvError},
+use tokio::sync::broadcast;
+use tokio_stream::{
+    Stream,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
 };
-use tokio_stream::Stream;
 
 const TOPIC_CAPACITY: usize = 20;
 
@@ -32,7 +32,6 @@ type Tx = broadcast::Sender<Payload>;
 struct Topic {
     subscribers: AtomicUsize,
     sender: Tx,
-    receiver: Rx,
 }
 
 /// A map keeping track of the existing topics.
@@ -57,7 +56,7 @@ impl TopicMap {
                 .subscribers
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            return topic.receiver.resubscribe();
+            return topic.sender.subscribe();
         }
 
         let (tx, rx) = broadcast::channel(TOPIC_CAPACITY);
@@ -65,7 +64,6 @@ impl TopicMap {
         let topic = Topic {
             subscribers: AtomicUsize::new(1),
             sender: tx,
-            receiver: rx.resubscribe(),
         };
 
         self.0.insert(topic_name.to_string(), topic);
@@ -81,23 +79,30 @@ impl TopicMap {
         let count = topic.subscribers.fetch_sub(1, Ordering::Relaxed);
 
         if count <= 1 {
-            let _ = topic.sender.downgrade();
-            let _ = self.0.remove(topic_name);
+            if let Some((_, topic)) = self.0.remove(topic_name) {
+                drop(topic.sender)
+            }
         }
     }
 }
 
 /// Holds a subscription to a topic.
 ///
-/// When the subscription is dropped,
-/// the parent topic might be deallocated from memory if no other subscriptions to it exist.
-///
 /// `Subscription` implements `Stream`, which means that the user can consume it as a stream
 /// to listen for incoming messages.
+///
+/// Given the nature of the pub-sub architecture and the fact that anyone might be able to publish
+/// to any topic at any time, the right to close the channel remains on the subscription side.
+///
+/// This means, a subscription will always remain open and it won't be closed from the publishers side.
+///
+/// The internal channel will only be closed when all the subscriptions for a given topic have been dropped.
+///
+/// When the subscription is dropped, the parent topic might be deallocated from memory if no other subscriptions to it exist.
 pub struct Subscription {
     topic: Arc<str>,
     inner_topics: Weak<TopicMap>,
-    rx: Rx,
+    stream: BroadcastStream<Payload>,
 }
 
 /// An error returned from the subscription stream.
@@ -112,17 +117,19 @@ pub enum SubscriptionStreamRecvError {
 
 impl Stream for Subscription {
     type Item = Result<Payload, SubscriptionStreamRecvError>;
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let fut = self.rx.recv();
-        pin!(fut);
-        let result = ready!(fut.poll(cx));
 
-        match result {
-            Ok(item) => Poll::Ready(Some(Ok(item))),
-            Err(RecvError::Closed) => Poll::Ready(None),
-            Err(RecvError::Lagged(n)) => {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Delegate polling to the inner BroadcastStream
+        let item = ready!(Pin::new(&mut self.stream).poll_next(cx));
+
+        match item {
+            Some(Ok(payload)) => Poll::Ready(Some(Ok(payload))),
+
+            Some(Err(BroadcastStreamRecvError::Lagged(n))) => {
                 Poll::Ready(Some(Err(SubscriptionStreamRecvError::Lagged(n))))
             }
+
+            None => Poll::Ready(None),
         }
     }
 }
@@ -170,7 +177,7 @@ impl EventBus {
         Subscription {
             topic: topic.into(),
             inner_topics: Arc::downgrade(&self.topics),
-            rx,
+            stream: BroadcastStream::new(rx),
         }
     }
 
@@ -188,5 +195,56 @@ impl EventBus {
             .map_err(|err| PublishError::BroadcastError(topic.into(), err))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+    use tokio_stream::StreamExt;
+
+    // Helper function to safely extract a message from a stream
+    async fn get_next_message(
+        sub: &mut Subscription,
+    ) -> Result<String, SubscriptionStreamRecvError> {
+        let result = sub
+            .next()
+            .await
+            .expect("Stream unexpectedly closed")
+            .map(|payload| String::from_utf8_lossy(&payload).to_string());
+
+        result
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_simple_pub_sub() {
+        let event_bus = EventBus::new();
+        let topic = "test_simple";
+        let expected_message = "Hello EventBus";
+
+        let mut subscription = event_bus.subscribe(topic);
+
+        // Communication: Channel to receive the final result from the subscriber
+        let (result_tx, result_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let result = get_next_message(&mut subscription).await;
+            result_tx.send(result).expect("failed to send");
+        });
+
+        // 3. Publish the message. This happens after the receiver is active.
+        event_bus
+            .publish(topic, expected_message.as_bytes())
+            .unwrap();
+
+        let received_result = result_rx.await.expect("Failed to receive result from task");
+        let received = received_result.unwrap();
+
+        println!("RECEIVEEED: {received}, {expected_message}");
+
+        assert_eq!(received, expected_message);
+
+        println!("The test never exits...");
     }
 }

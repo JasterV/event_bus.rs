@@ -1,13 +1,21 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 use crate::{rc_map::RcMap, subscription::Subscription};
-use async_broadcast::{Sender, broadcast};
+use async_broadcast::{Receiver, Sender, broadcast};
 use std::sync::Arc;
 
 const DEFAULT_TOPIC_CAPACITY: usize = 1000;
 
 mod rc_map;
 mod subscription;
+
+// Wrapper around a sender and a receiver.
+//
+// This type is useful to make sure that a channel is never closed.
+// By holding always a strong reference to a Sender and a Receiver, the channel will never close.
+#[derive(Clone)]
+#[allow(dead_code)]
+struct Channel(pub Sender<Arc<[u8]>>, pub Receiver<Arc<[u8]>>);
 
 /// Error type returned by the `publish` method.
 #[derive(thiserror::Error, Debug)]
@@ -26,7 +34,7 @@ pub enum PublishError {
 /// When all the subscriptions to a topic get dropped, the topic itself is dropped from memory.
 #[derive(Clone)]
 pub struct EventBus {
-    inner: RcMap<Arc<str>, Sender<Arc<[u8]>>>,
+    inner: RcMap<Arc<str>, Channel>,
     topic_capacity: usize,
 }
 
@@ -61,9 +69,9 @@ impl EventBus {
             return Subscription::from(object_ref);
         }
 
-        let (tx, _) = broadcast(self.topic_capacity);
+        let (tx, rx) = broadcast(self.topic_capacity);
 
-        let object_ref = self.inner.insert(topic.into(), tx);
+        let object_ref = self.inner.insert(topic.into(), Channel(tx, rx));
 
         Subscription::from(object_ref)
     }
@@ -77,7 +85,7 @@ impl EventBus {
             return Ok(());
         };
 
-        let tx = object_ref.value();
+        let Channel(tx, _) = object_ref.value();
 
         let result = tx.try_broadcast(Arc::from(data));
 

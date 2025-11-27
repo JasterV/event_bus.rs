@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 dashmap = "6.1.0"
 thiserror = "2.0.17"
-async-broadcast = "0.5"
+async-broadcast = "0.7"
 futures = "0.3"
 async-stream = "0.3"
 

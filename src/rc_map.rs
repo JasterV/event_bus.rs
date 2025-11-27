@@ -1,37 +1,60 @@
-/// Work in progress
-///
-/// The goal is to build a map that maintains a reference counts of its pairs.
-///
-/// Once a pair doesn't have any more objects referencing it, the pair gets automatically removed.
+use dashmap::DashMap;
 use std::{
     hash::Hash,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicIsize, Ordering},
+    },
 };
 
-use dashmap::DashMap;
-
-pub struct Object<T> {
-    count: AtomicUsize,
-    elem: T,
+#[derive(Clone)]
+pub struct ObjectRef<K, V>
+where
+    K: Hash + Eq + Clone,
+{
+    parent_ref: Weak<DashMap<K, (AtomicIsize, V)>>,
+    key: K,
+    value: V,
 }
 
-impl<T> Object<T> {
-    pub fn new(value: T) -> Self {
-        Self {
-            count: AtomicUsize::new(1),
-            elem: value,
-        }
+impl<K, V> ObjectRef<K, V>
+where
+    K: Hash + Eq + Clone,
+{
+    pub fn value(&self) -> &V {
+        &self.value
+    }
+}
+
+impl<K, V> Drop for ObjectRef<K, V>
+where
+    K: Hash + Eq + Clone,
+{
+    fn drop(&mut self) {
+        let Some(map) = self.parent_ref.upgrade() else {
+            return;
+        };
+
+        map.alter(&self.key, |_, (count, value)| {
+            count.fetch_sub(1, Ordering::Relaxed);
+            (count, value)
+        });
+
+        map.remove_if(&self.key, |_, (count, _)| {
+            count.load(Ordering::Relaxed) <= 0
+        });
     }
 }
 
 #[derive(Clone)]
 pub struct RcMap<K, V> {
-    inner: Arc<DashMap<K, Object<V>>>,
+    inner: Arc<DashMap<K, (AtomicIsize, V)>>,
 }
 
 impl<K, V> RcMap<K, V>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Clone,
+    V: Clone,
 {
     pub fn new() -> Self {
         Self {
@@ -39,12 +62,37 @@ where
         }
     }
 
-    pub fn get(&self, key: K) -> Option<Object<V>> {
-        // TODO
-        todo!()
+    pub fn get(&self, key: K) -> Option<ObjectRef<K, V>> {
+        self.inner.alter(&key, |_, (count, value)| {
+            count.fetch_add(1, Ordering::Relaxed);
+            (count, value)
+        });
+
+        let option = self.inner.get(&key);
+
+        match option {
+            Some(value_ref) => {
+                let (_count, value) = value_ref.value();
+
+                Some(ObjectRef {
+                    key,
+                    parent_ref: Arc::downgrade(&self.inner),
+                    value: value.clone(),
+                })
+            }
+            None => None,
+        }
     }
 
-    pub fn insert(&self, key: K, value: V) -> Option<Object<V>> {
-        todo!()
+    pub fn insert(&self, key: K, value: V) -> ObjectRef<K, V> {
+        let _prev = self
+            .inner
+            .insert(key.clone(), (AtomicIsize::new(1), value.clone()));
+
+        ObjectRef {
+            key,
+            parent_ref: Arc::downgrade(&self.inner),
+            value,
+        }
     }
 }

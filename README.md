@@ -29,12 +29,12 @@ futures = "0.3"
 ## Usage Example
 
 ```rust
-use event_bus_rs::EventBusBuilder;
+use event_bus_rs::EventBus;
 use futures::StreamExt;
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBusBuilder::new()
+    let bus = EventBus::builder()
           .with_topic_capacity(50)
           .build();
 
@@ -70,9 +70,10 @@ async fn main() {
 
 ## API Overview
 
-* `EventBus::new()` – create a new bus
-* `EventBus::subscribe(topic: &str) -> Subscription` – subscribe to a topic
-* `EventBus::publish(topic: &str, data: &[u8]) -> Result<(), PublishError>` – publish a message
+* `EventBus::new() -> EventBus` – create a new bus
+* `EventBus::builder() -> EventBusBuilder` – create a new bus builder
+* `EventBus::subscribe(&self, topic: &str) -> Subscription` – subscribe to a topic
+* `EventBus::publish(&self, topic: &str, data: &[u8]) -> Result<(), PublishError>` – publish a message
 * `Subscription` implements `futures::Stream<Item = Result<Payload, SubscriptionStreamRecvError>>`
 
 ---

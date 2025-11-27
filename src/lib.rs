@@ -152,7 +152,7 @@ pub struct EventBusBuilder {
 }
 
 impl EventBusBuilder {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
         }
@@ -180,6 +180,14 @@ pub struct EventBus {
 }
 
 impl EventBus {
+    pub fn new() -> Self {
+        EventBusBuilder::new().build()
+    }
+
+    pub fn builder() -> EventBusBuilder {
+        EventBusBuilder::new()
+    }
+
     /// Subscribes to a topic and returns a `Subscription`.
     ///
     /// This operation will never fail, if the topic doesn't exist it gets internally created.
@@ -235,7 +243,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_simple_pub_sub() {
-        let event_bus = EventBusBuilder::new().build();
+        let event_bus = EventBus::new();
         let topic = "test_simple";
         let expected_message = "Hello EventBus";
 

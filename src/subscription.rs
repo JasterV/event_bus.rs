@@ -1,9 +1,10 @@
-use crate::topic::TopicMap;
+use crate::Topic;
 use async_broadcast::Receiver;
+use dashmap::DashMap;
 use futures::Stream;
 use std::{
     pin::Pin,
-    sync::{Arc, Weak},
+    sync::{Arc, Weak, atomic::Ordering},
     task::{Context, Poll},
 };
 
@@ -22,7 +23,7 @@ use std::{
 /// When the subscription is dropped, the parent topic might be deallocated from memory if no other subscriptions to it exist.
 pub struct Subscription {
     pub(crate) topic: Arc<str>,
-    pub(crate) inner_topics: Weak<TopicMap>,
+    pub(crate) topics_ref: Weak<DashMap<String, Topic>>,
     pub(crate) rx: Receiver<Arc<[u8]>>,
 }
 
@@ -40,8 +41,24 @@ impl Stream for Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        if let Some(topics) = self.inner_topics.upgrade() {
-            topics.remove_subscriber(&self.topic);
+        let Some(topics) = self.topics_ref.upgrade() else {
+            return;
+        };
+
+        // Scope the guard so it drops before we call `remove`.
+        //
+        // This is done because trying to call `remove` while we hold a read guard
+        // from the DashMap will result in a deadlock.
+        let subscribers_count = {
+            let Some(topic_ref) = topics.get(self.topic.as_ref()) else {
+                return;
+            };
+
+            topic_ref.subscribers.fetch_sub(1, Ordering::Relaxed)
+        };
+
+        if subscribers_count <= 1 {
+            let _ = topics.remove(self.topic.as_ref());
         }
     }
 }

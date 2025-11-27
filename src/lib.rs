@@ -1,14 +1,20 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
-mod subscription;
-mod topic;
+use crate::subscription::Subscription;
+use async_broadcast::{Sender, broadcast};
+use dashmap::DashMap;
+use std::sync::{Arc, atomic::AtomicUsize};
 
-use std::sync::Arc;
-use topic::TopicMap;
-// Re-exports
-pub use subscription::Subscription;
+mod subscription;
 
 const DEFAULT_TOPIC_CAPACITY: usize = 1000;
+
+/// Represents a single topic.
+/// Contains information about how many subscribers it has and the inner broadcast sender & receivers
+pub struct Topic {
+    subscribers: AtomicUsize,
+    sender: Sender<Arc<[u8]>>,
+}
 
 /// Error type returned by the `publish` method.
 #[derive(thiserror::Error, Debug)]
@@ -42,7 +48,8 @@ impl EventBusBuilder {
 
     pub fn build(self) -> EventBus {
         EventBus {
-            topics: Arc::new(TopicMap::new(self.topic_capacity)),
+            inner: Arc::new(DashMap::new()),
+            topic_capacity: self.topic_capacity,
         }
     }
 }
@@ -54,18 +61,19 @@ impl EventBusBuilder {
 /// When all the subscriptions to a topic get dropped, the topic itself is dropped from memory.
 #[derive(Clone)]
 pub struct EventBus {
-    topics: Arc<TopicMap>,
+    inner: Arc<DashMap<String, Topic>>,
+    topic_capacity: usize,
 }
 
 impl Default for EventBus {
     fn default() -> Self {
-        EventBus::new()
+        EventBus::builder().build()
     }
 }
 
 impl EventBus {
-    pub fn new() -> Self {
-        EventBusBuilder::new().build()
+    pub fn new() -> EventBus {
+        Self::default()
     }
 
     pub fn builder() -> EventBusBuilder {
@@ -77,12 +85,31 @@ impl EventBus {
     /// This operation will never fail, if the topic doesn't exist it gets internally created.
     /// Once the subscription goes out of scope and there are no more references to the given topic,
     /// the topic will automatically be dropped from memory.
-    pub fn subscribe(&self, topic: &str) -> Subscription {
-        let rx = self.topics.new_subscriber(topic);
+    pub fn subscribe(&self, topic_name: &str) -> Subscription {
+        if let Some(topic) = self.inner.get(topic_name) {
+            topic
+                .subscribers
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            return Subscription {
+                topic: topic_name.into(),
+                topics_ref: Arc::downgrade(&self.inner),
+                rx: topic.sender.new_receiver(),
+            };
+        }
+
+        let (tx, rx) = broadcast::<Arc<[u8]>>(self.topic_capacity);
+
+        let topic = Topic {
+            subscribers: AtomicUsize::new(1),
+            sender: tx,
+        };
+
+        self.inner.insert(topic_name.to_string(), topic);
 
         Subscription {
-            topic: topic.into(),
-            inner_topics: Arc::downgrade(&self.topics),
+            topic: topic_name.into(),
+            topics_ref: Arc::downgrade(&self.inner),
             rx,
         }
     }
@@ -91,12 +118,12 @@ impl EventBus {
     ///
     /// If the topic doesn't exist, nothing will happen and it won't be considered an error.
     /// This method will only fail if, in case a topic with the given name exists, the internal `send` operation fails.
-    pub fn publish(&self, topic: &str, data: &[u8]) -> Result<(), PublishError> {
-        let Some(sx) = self.topics.get_sender(topic) else {
+    pub fn publish(&self, topic_name: &str, data: &[u8]) -> Result<(), PublishError> {
+        let Some(topic) = self.inner.get(topic_name) else {
             return Ok(());
         };
 
-        let result = sx.try_broadcast(Arc::from(data));
+        let result = topic.sender.try_broadcast(Arc::from(data));
 
         match result {
             Ok(_) => Ok(()),
@@ -104,11 +131,11 @@ impl EventBus {
             Err(async_broadcast::TrySendError::Inactive(_)) => Ok(()),
             // The channel is closed, we return an error as this is unexpected
             Err(async_broadcast::TrySendError::Closed(_)) => {
-                Err(PublishError::ChannelClosed(topic.into()))
+                Err(PublishError::ChannelClosed(topic_name.into()))
             }
             // The channel is overflown, we return an error
             Err(async_broadcast::TrySendError::Full(_)) => {
-                Err(PublishError::CapacityOverflow(topic.into()))
+                Err(PublishError::CapacityOverflow(topic_name.into()))
             }
         }
     }

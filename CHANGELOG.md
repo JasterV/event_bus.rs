@@ -11,20 +11,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- add more tests & fix rc map bug
-
-### Other
-
-- make clippy happy
-- add CD
-- remove channel type
-- Update README.md
-- update docs
-- use rc map in event bus
-- build rc map
-- rc_map
-- refactor lib
-- refactor lib & update README
-- update deny-check
-- update async-broadcast
-- first commit
+- [0.1.0] First release, check out the README & docs for usage examples.

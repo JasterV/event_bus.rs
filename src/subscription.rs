@@ -1,5 +1,5 @@
-use crate::{Channel, rc_map::ObjectRef};
-use async_broadcast::Receiver;
+use crate::rc_map::ObjectRef;
+use async_broadcast::{Receiver, Sender};
 use futures::Stream;
 use std::{
     pin::Pin,
@@ -24,14 +24,25 @@ pub struct Subscription {
     // We need to keep the ownership of the object ref
     // Otherwise if the object ref gets dropped, it might cleanup the topic
     // And the channel would get closed
-    _object_ref: ObjectRef<Arc<str>, Channel>,
+    _object_ref: ObjectRef<Arc<str>, Sender<Arc<[u8]>>>,
     rx: Receiver<Arc<[u8]>>,
 }
 
-impl From<ObjectRef<Arc<str>, Channel>> for Subscription {
-    fn from(object_ref: ObjectRef<Arc<str>, Channel>) -> Self {
-        let Channel(tx, _) = object_ref.value();
+impl Subscription {
+    pub(crate) fn new_with_rx(
+        object_ref: ObjectRef<Arc<str>, Sender<Arc<[u8]>>>,
+        rx: Receiver<Arc<[u8]>>,
+    ) -> Self {
+        Self {
+            _object_ref: object_ref,
+            rx,
+        }
+    }
+}
 
+impl From<ObjectRef<Arc<str>, Sender<Arc<[u8]>>>> for Subscription {
+    fn from(object_ref: ObjectRef<Arc<str>, Sender<Arc<[u8]>>>) -> Self {
+        let tx = object_ref.value();
         let rx = tx.new_receiver();
 
         Self {

@@ -1,21 +1,13 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 use crate::{rc_map::RcMap, subscription::Subscription};
-use async_broadcast::{Receiver, Sender, broadcast};
+use async_broadcast::{Sender, broadcast};
 use std::sync::Arc;
 
 const DEFAULT_TOPIC_CAPACITY: usize = 1000;
 
 mod rc_map;
 mod subscription;
-
-// Wrapper around a sender and a receiver.
-//
-// This type is useful to make sure that a channel is never closed.
-// By holding always a strong reference to a Sender and a Receiver, the channel will never close.
-#[derive(Clone)]
-#[allow(dead_code)]
-struct Channel(pub Sender<Arc<[u8]>>, pub Receiver<Arc<[u8]>>);
 
 /// Error type returned by the `publish` method.
 #[derive(thiserror::Error, Debug)]
@@ -34,7 +26,7 @@ pub enum PublishError {
 /// When all the subscriptions to a topic get dropped, the topic itself is dropped from memory.
 #[derive(Clone)]
 pub struct EventBus {
-    inner: RcMap<Arc<str>, Channel>,
+    inner: RcMap<Arc<str>, Sender<Arc<[u8]>>>,
     topic_capacity: usize,
 }
 
@@ -69,11 +61,17 @@ impl EventBus {
             return Subscription::from(object_ref);
         }
 
+        // When we create a channel, a single sender and receiver are created.
+        //
+        // If in the moment of the channel creation, either the sender or the receiver get dropped, the channel will immediately be closed.
+        //
+        // This is why we are not using `Subscription::from(object_ref)` in this scenario
+        // but rather we must make use of the receiver created or the channel will be closed.
         let (tx, rx) = broadcast(self.topic_capacity);
 
-        let object_ref = self.inner.insert(topic.into(), Channel(tx, rx));
+        let object_ref = self.inner.insert(topic.into(), tx);
 
-        Subscription::from(object_ref)
+        Subscription::new_with_rx(object_ref, rx)
     }
 
     /// Publishes a bunch of bytes to a topic.
@@ -85,8 +83,7 @@ impl EventBus {
             return Ok(());
         };
 
-        let Channel(tx, _) = object_ref.value();
-
+        let tx = object_ref.value();
         let result = tx.try_broadcast(Arc::from(data));
 
         match result {
@@ -110,7 +107,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
 
-    // Helper function to safely extract a message from a stream
+    // Helper function to extract a message from the subscription
     async fn get_next_message(sub: &mut Subscription) -> String {
         let payload = sub.next().await.expect("Stream unexpectedly closed");
         String::from_utf8_lossy(&payload).to_string()

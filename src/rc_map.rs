@@ -218,6 +218,6 @@ mod tests {
 
         let result = map.insert("potatoe", "table");
 
-        assert!(matches!(result, Ok(_)));
+        assert!(result.is_ok());
     }
 }

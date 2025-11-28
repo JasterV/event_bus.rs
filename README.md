@@ -13,6 +13,14 @@ Designed to be **efficient**, **simple**, and **easy to use**, allowing you to p
 - **Automatic cleanup**: topics are removed when the last subscriber drops
 - **Minimal & simple API**: just `EventBus::subscribe` and `EventBus::publish`
 
+## Topic capacity
+
+The EventBus is build on top of bounded channels, which means that each time a topic is created, we need to specify a capacity.
+
+The default one is set to an arbitrary value which is available and documented in the docs.
+
+To know more about how the bounded channels work, check [async_broadcast](https://docs.rs/async-broadcast/0.7.2/async_broadcast/index.html)
+
 ---
 
 ## Installation
@@ -62,7 +70,7 @@ async fn main() {
 ## API Overview
 
 * `EventBus::new() -> EventBus` – create a new bus
-* `EventBus::builder() -> EventBusBuilder` – create a new bus builder
+* `EventBus::new_with_topic_capacity() -> EventBus` - create a new but with a configure topic capacity
 * `EventBus::subscribe(&self, topic: &str) -> Subscription` – subscribe to a topic
 * `EventBus::publish(&self, topic: &str, data: &[u8]) -> Result<(), PublishError>` – publish a message
 * `Subscription` implements `futures::Stream<Item = Arc<[u8]>>`

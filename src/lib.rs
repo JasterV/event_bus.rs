@@ -7,7 +7,10 @@ use crate::{
 use async_broadcast::{Sender, broadcast};
 use std::sync::Arc;
 
-const DEFAULT_TOPIC_CAPACITY: usize = 1000;
+/// The default topic capacity, it has been set to this value
+/// for no particular reason, it is recommended that users
+/// set their preferred value.
+pub const DEFAULT_TOPIC_CAPACITY: usize = 1000;
 
 mod rc_map;
 mod subscription;

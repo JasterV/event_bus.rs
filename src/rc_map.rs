@@ -1,9 +1,6 @@
-//! This module provides an RcMap (Or ReferenceCountMap) which is a map that keeps track of how many references of a value in a pair exist.
+//! This module provides an RcMap (Or ReferenceCountMap) which is a map that keeps track of how many references of an entry exist.
 //!
-//! Every time someone gets a value by key, that value's reference counter increases.
-//! When a reference to a value is dropped, the reference counter decreases.
-//!
-//! When the references counter of a value hits 0, the whole pair is removed from the map.
+/// This data structure keeps track of how many references of an entry exist and perform automatic cleanup when an entry has no references pointing to it.
 use dashmap::DashMap;
 use std::{
     fmt::Debug,
@@ -69,10 +66,12 @@ where
 
 /// A ReferenceCountMap.
 ///
-/// It exposes get and insert operations.
+/// It keeps track of how many references of an entry exist and perform automatic cleanup when an entry has no references pointing to it.
 ///
-/// The insert operation always returns an `ObjectRef` to the inserted value.
-/// If that object is dropped and no other references existed to that pair, the pair is cleaned up.
+/// Every time someone gets a value by key, that value's reference counter increases.
+/// When a reference to a value is dropped, the reference counter decreases.
+///
+/// When the references counter of a value hits 0, the whole pair is removed from the map.
 #[derive(Clone)]
 pub struct RcMap<K, V> {
     inner: Arc<DashMap<K, (AtomicIsize, V)>>,

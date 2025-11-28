@@ -1,6 +1,9 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
-use crate::{rc_map::RcMap, subscription::Subscription};
+use crate::{
+    rc_map::{InsertError, RcMap},
+    subscription::Subscription,
+};
 use async_broadcast::{Sender, broadcast};
 use std::sync::Arc;
 
@@ -57,21 +60,20 @@ impl EventBus {
     /// Once the subscription goes out of scope and there are no more references to the given topic,
     /// the topic will automatically be dropped from memory.
     pub fn subscribe(&self, topic: &str) -> Subscription {
-        if let Some(object_ref) = self.inner.get(topic.into()) {
-            return Subscription::from(object_ref);
-        }
-
-        // When we create a channel, a single sender and receiver are created.
-        //
-        // If in the moment of the channel creation, either the sender or the receiver get dropped, the channel will immediately be closed.
-        //
-        // This is why we are not using `Subscription::from(object_ref)` in this scenario
-        // but rather we must make use of the receiver created or the channel will be closed.
         let (tx, rx) = broadcast(self.topic_capacity);
 
-        let object_ref = self.inner.insert(topic.into(), tx);
-
-        Subscription::new_with_rx(object_ref, rx)
+        match self.inner.insert(topic.into(), tx) {
+            Ok(object_ref) => {
+                // If in the moment of the channel creation, either the sender or the receiver get dropped, the channel will immediately be closed.
+                //
+                // This is why we are not using `Subscription::from(object_ref)` in this scenario
+                // but rather we must make use of the receiver created or the channel will be closed.
+                Subscription::new_with_rx(object_ref, rx)
+            }
+            // In this case we are fine with the new channel we created being dropped.
+            // Since a channel already exists for this key we don't need to store the receiver and we can let the channel be closed.
+            Err(InsertError::AlreadyExists(_key, object_ref)) => Subscription::from(object_ref),
+        }
     }
 
     /// Publishes a bunch of bytes to a topic.

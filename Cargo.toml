@@ -1,6 +1,6 @@
 [package]
 name = "event_bus_rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A runtime-agnostic, async, and thread-safe event bus for Rust."
 keywords = ["event_bus", "pubsub", "event", "messaging", "event_based"]

@@ -1,5 +1,7 @@
 # event_bus.rs
 
+[![Crate Version: event_bus_rs](https://img.shields.io/crates/v/event_bus_rs.svg)](https://crates.io/crates/event_bus_rs)
+
 A **runtime-agnostic**, **async**, and **thread-safe** event bus for Rust.
 Designed to be **efficient**, **simple**, and **easy to use**, allowing you to publish and subscribe to messages across threads and async tasks.
 

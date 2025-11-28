@@ -2,6 +2,14 @@
 name = "event_bus_rs"
 version = "0.1.0"
 edition = "2024"
+description = "A runtime-agnostic, async, and thread-safe event bus for Rust."
+keywords = ["event_bus", "pubsub", "event", "messaging", "event_based"]
+categories = ["asynchronous", "data-structures", "rust-patterns"]
+authors = ["Victor Martínez Montané <jaster.victor@gmail.com>"]
+rust-version = "1.80"
+homepage = "https://github.com/JasterV/event_bus.rs"
+repository = "https://github.com/JasterV/event_bus.rs"
+license = "MIT"
 
 [dependencies]
 dashmap = "6.1.0"

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/JasterV/event_bus.rs/compare/v0.1.4...v0.1.5) - 2025-12-01
+
+### Other
+
+- do not enforce the internal key of RcMap to be Clone
+- make more clear internally the management of the channel
+
 ## [0.1.4](https://github.com/JasterV/event_bus.rs/compare/v0.1.3...v0.1.4) - 2025-12-01
 
 ### Other

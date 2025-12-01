@@ -110,8 +110,11 @@ impl EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fake::{Fake, Faker};
     use futures::StreamExt;
-    use rand::{RngCore, SeedableRng, rngs::StdRng};
+    use futures::stream;
+    use proptest::prop_assert_eq;
+    use test_strategy::proptest;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_multithreaded_pub_sub() {
@@ -205,6 +208,7 @@ mod tests {
         let mut sub_b = bus.subscribe("B");
 
         bus.publish("A", b"msgA").unwrap();
+
         bus.publish("A", b"msgC").unwrap();
         bus.publish("B", b"msgB").unwrap();
         bus.publish("B", b"msgD").unwrap();
@@ -220,153 +224,45 @@ mod tests {
         assert_eq!(&*recv_d, b"msgD");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn stress_test_concurrent_publishers() {
-        const TOPIC: &str = "stress_topic";
-        const PUBLISHERS: usize = 20;
-        const MSGS_PER_PUBLISHER: usize = 200;
-        const TOTAL_MSGS: usize = PUBLISHERS * MSGS_PER_PUBLISHER;
-
-        let bus = EventBus::new();
-        let mut sub = bus.subscribe(TOPIC);
-
-        // Deterministic RNG for reproducibility
-        let mut rng = StdRng::seed_from_u64(12345);
-
-        // Pre-generate all messages and expected results
-        let messages: Vec<Arc<[u8]>> = (0..TOTAL_MSGS)
-            .map(|_| rng.next_u64().to_le_bytes().into())
-            .collect();
-
-        // Spawn publisher tasks
-        let handles: Vec<_> = (0..PUBLISHERS)
-            .map(|id| {
-                let start = id * MSGS_PER_PUBLISHER;
-                let end = start + MSGS_PER_PUBLISHER;
-                let bus = bus.clone();
-                let slice = messages[start..end].to_vec();
-
-                tokio::spawn(async move {
-                    for msg in slice {
-                        bus.publish(TOPIC, &msg).unwrap();
-                    }
-                })
-            })
-            .collect();
-
-        // Collect all messages in receiver
-        let mut received = Vec::new();
-
-        for _ in 0..TOTAL_MSGS {
-            let msg = sub
-                .next()
-                .await
-                .expect("Channel closed unexpectedly during stress test");
-
-            received.push(msg.to_vec());
-        }
-
-        // Ensure all send tasks complete
-        for h in handles {
-            h.await.unwrap();
-        }
-
-        // Check we got all messages, sorted by content because async order varies
-        let mut expected_sorted: Vec<_> = messages.clone().iter().map(|v| v.to_vec()).collect();
-        expected_sorted.sort();
-        received.sort();
-
-        assert_eq!(
-            received, expected_sorted,
-            "Message mismatch under stress load!"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn stress_test_multiple_subscribers() {
+    #[proptest(async = "tokio")]
+    async fn stress_test_multiple_subscribers_prop(
+        #[strategy(1usize..100)] subscribers: usize,
+        #[strategy(20usize..1_000)] total_msgs: usize,
+    ) {
         const TOPIC: &str = "stress_multi_subs";
-        const PUBLISHERS: usize = 10;
-        const SUBSCRIBERS: usize = 15;
-        const MSGS_PER_PUBLISHER: usize = 150;
-        const TOTAL: usize = PUBLISHERS * MSGS_PER_PUBLISHER;
+        let bus = EventBus::new_with_topic_capacity(total_msgs);
 
-        let bus = EventBus::new();
-
-        // Deterministic RNG seed
-        let mut rng = StdRng::seed_from_u64(9999);
-
-        // Random messages corpus
-        let messages: Vec<Arc<[u8]>> = (0..TOTAL)
-            .map(|_| rng.next_u64().to_le_bytes().into())
+        // Generate messages to publish
+        let mut messages: Vec<Arc<[u8]>> = (0..total_msgs)
+            .map(|_| Faker.fake::<u64>().to_le_bytes().into())
             .collect();
 
-        // Create subscribers
-        let subs: Vec<Subscription> = (0..SUBSCRIBERS).map(|_| bus.subscribe(TOPIC)).collect();
+        // Register all subscribers
+        let subs: Vec<_> = (0..subscribers).map(|_| bus.subscribe(TOPIC)).collect();
 
-        // Spawn publishers
-        let pub_handles = (0..PUBLISHERS)
-            .map(|id| {
-                let start = id * MSGS_PER_PUBLISHER;
-                let end = start + MSGS_PER_PUBLISHER;
-                let bus = bus.clone();
-                let slice = messages[start..end].to_vec();
+        // Run all subscribers concurrently
+        let subs_handles = tokio::spawn(async move {
+            stream::iter(subs)
+                .map(|sub| sub.take(total_msgs).collect::<Vec<_>>())
+                .buffer_unordered(subscribers)
+                .collect::<Vec<_>>()
+                .await
+        });
 
-                tokio::spawn(async move {
-                    for msg in slice {
-                        bus.publish(TOPIC, &msg).unwrap();
-                        // Bring the task randomly back to the runtime
-                        if rand::random::<bool>() {
-                            tokio::task::yield_now().await;
-                        }
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        // Spawn subscriber collectors
-        let sub_handles = subs
-            .into_iter()
-            .map(|mut sub| {
-                tokio::spawn(async move {
-                    let mut collected = Vec::with_capacity(TOTAL);
-
-                    for _ in 0..TOTAL {
-                        let msg = sub
-                            .next()
-                            .await
-                            .expect("Channel closed unexpectedly during stress test");
-
-                        collected.push(msg.to_vec());
-                    }
-
-                    collected
-                })
-            })
-            .collect::<Vec<_>>();
-
-        // Ensure publishers finish
-        for h in pub_handles {
-            h.await.unwrap();
+        // Publish all messages
+        for msg in &messages {
+            bus.publish(TOPIC, msg.as_ref()).unwrap();
         }
 
-        // Collect all subscriber results
-        let mut sub_results = Vec::new();
-        for h in sub_handles {
-            sub_results.push(h.await.unwrap());
-        }
+        // Wait for all subscribers to complete
+        let sub_results = subs_handles.await.unwrap();
 
-        // Validation (for each subscriber)
-        for mut received in sub_results {
-            // Asynchronous race means ordering is not enforced → sort
-            received.sort();
+        // Sort input messages to be able to assert against the results
+        messages.sort();
 
-            let mut expected: Vec<_> = messages.clone().into_iter().map(|v| v.to_vec()).collect();
-            expected.sort();
-
-            assert_eq!(
-                received, expected,
-                "Subscriber missed or corrupted messages",
-            );
+        for mut result in sub_results {
+            result.sort();
+            prop_assert_eq!(&result, &messages, "subscriber missed or altered messages");
         }
     }
 }

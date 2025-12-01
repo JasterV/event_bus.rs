@@ -48,6 +48,7 @@ async fn main() {
 
     // Subscribe to a topic
     let mut sub = bus.subscribe("my_topic");
+    let publisher = bus.publisher("my_topic");
 
     // Spawn a subscriber task
     tokio::spawn(async move {
@@ -57,7 +58,7 @@ async fn main() {
     });
 
     // Publish a message
-    bus.publish("my_topic", b"Hello, EventBus!").unwrap();
+    publisher.publish(b"Hello, EventBus!").unwrap();
 }
 ```
 

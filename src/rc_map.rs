@@ -14,7 +14,7 @@ use std::{
 /// A smart reference around a key value pair.
 ///
 /// Once it is dropped, it will decrease the reference counter of the pair and potentially remove the pair if the counter hits 0.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ObjectRef<K, V>
 where
     K: Hash + Eq + Clone,
@@ -30,6 +30,10 @@ where
 {
     pub fn value(&self) -> &V {
         &self.value
+    }
+
+    pub fn key(&self) -> &K {
+        &self.key
     }
 }
 

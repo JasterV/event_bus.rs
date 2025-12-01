@@ -1,30 +1,30 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
+mod publisher;
+mod rc_map;
+mod subscription;
+
 use crate::{
+    publisher::Publisher,
     rc_map::{InsertError, RcMap},
-    subscription::Subscription,
 };
-use async_broadcast::{Sender, broadcast};
+use async_broadcast::{InactiveReceiver, Sender, broadcast};
 use std::sync::Arc;
+
+/// Re-export Subscription
+pub use subscription::Subscription;
 
 /// The default topic capacity, it has been set to this value
 /// for no particular reason, it is recommended that users
 /// set their preferred value.
 pub const DEFAULT_TOPIC_CAPACITY: usize = 1000;
 
-mod rc_map;
-mod subscription;
-
-/// Error type returned by the `publish` method.
-#[derive(thiserror::Error, Debug)]
-pub enum PublishError {
-    #[error("Failed to publish message to topic, it was unexpectedly closed: '{0}'")]
-    ChannelClosed(Arc<str>),
-    #[error(
-        "Failed to publish message to topic, the topic is full and can't handle more messages: '{0}'"
-    )]
-    CapacityOverflow(Arc<str>),
-}
+/// Utility typed used to keep at least an instance of both a sender and a receiver
+/// in memory so the channel doesn't get closed.
+///
+/// `async_broadcast` will drop a channel if either all the receivers or all the senders get dropped.
+#[derive(Clone)]
+struct Channel(pub Sender<Arc<[u8]>>, pub InactiveReceiver<Arc<[u8]>>);
 
 /// A thread-safe event bus.
 ///
@@ -32,7 +32,7 @@ pub enum PublishError {
 /// When all the subscriptions to a topic get dropped, the topic itself is dropped from memory.
 #[derive(Clone)]
 pub struct EventBus {
-    inner: RcMap<Arc<str>, Sender<Arc<[u8]>>>,
+    inner: RcMap<Arc<str>, Channel>,
     topic_capacity: usize,
 }
 
@@ -60,55 +60,41 @@ impl EventBus {
     ///
     /// This operation will never fail: If the topic doesn't exist it gets internally created.
     ///
-    /// Once the subscription goes out of scope and there are no more references to the given topic,
+    /// Once the subscription goes out of scope and there are no more references (either subscriptions or publishers) to the given topic,
     /// the topic will automatically be dropped from memory.
     pub fn subscribe(&self, topic: &str) -> Subscription {
         let (tx, rx) = broadcast(self.topic_capacity);
+        let channel = Channel(tx, rx.deactivate());
 
-        match self.inner.insert(topic.into(), tx) {
-            Ok(object_ref) => {
-                // If in the moment of the channel creation, either the sender or the receiver get dropped, the channel will immediately be closed.
-                //
-                // This is why we are not using `Subscription::from(object_ref)` in this scenario
-                // but rather we must make use of the receiver created or the channel will be closed.
-                Subscription::new_with_rx(object_ref, rx)
-            }
-            // In this case we are fine with the new channel we created being dropped.
-            // Since a channel already exists for this key we don't need to store the receiver and we can let the channel be closed.
+        match self.inner.insert(topic.into(), channel) {
+            Ok(object_ref) => Subscription::from(object_ref),
+            // If the topic already exists, the previously created channel will be dropped and closed.
             Err(InsertError::AlreadyExists(_key, object_ref)) => Subscription::from(object_ref),
         }
     }
 
-    /// Publishes a bunch of bytes to a topic.
+    /// Builds a `Publisher`.
     ///
-    /// If the topic doesn't exist, nothing will happen and it won't be considered an error.
-    /// This method will only fail if, in case a topic with the given name exists, the internal `send` operation fails.
-    pub fn publish(&self, topic: &str, data: &[u8]) -> Result<(), PublishError> {
-        let Some(object_ref) = self.inner.get(topic.into()) else {
-            return Ok(());
-        };
+    /// A `Publisher` holds a reference to the internal topic and is able to publish messages to it.
+    ///
+    /// Once the `Publisher` goes out of scope and there are no more references (either subscriptions or publishers) to the given topic,
+    /// the topic will automatically be dropped from memory.
+    pub fn publisher(&self, topic: &str) -> Publisher {
+        let (tx, rx) = broadcast(self.topic_capacity);
+        let channel = Channel(tx, rx.deactivate());
 
-        let tx = object_ref.value();
-        let result = tx.try_broadcast(Arc::from(data));
-
-        match result {
-            Ok(_) => Ok(()),
-            // There are no active receivers, we do not consider this an error
-            Err(async_broadcast::TrySendError::Inactive(_)) => Ok(()),
-            // The channel is closed, we return an error as this is unexpected
-            Err(async_broadcast::TrySendError::Closed(_)) => {
-                Err(PublishError::ChannelClosed(topic.into()))
-            }
-            // The channel is overflown, we return an error
-            Err(async_broadcast::TrySendError::Full(_)) => {
-                Err(PublishError::CapacityOverflow(topic.into()))
-            }
+        match self.inner.insert(topic.into(), channel) {
+            Ok(object_ref) => Publisher::from(object_ref),
+            // If the topic already exists, the previously created channel will be dropped and closed.
+            Err(InsertError::AlreadyExists(_key, object_ref)) => Publisher::from(object_ref),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::publisher::PublishError;
+
     use super::*;
     use fake::{Fake, Faker};
     use futures::StreamExt;
@@ -123,10 +109,11 @@ mod tests {
         let expected_message = b"Hello EventBus";
 
         let mut subscription = event_bus.subscribe(topic);
+        let publisher = event_bus.publisher(topic);
 
         let task_handle = tokio::spawn(async move { subscription.next().await.unwrap() });
 
-        event_bus.publish(topic, expected_message).unwrap();
+        publisher.publish(expected_message).unwrap();
 
         let received = task_handle
             .await
@@ -136,22 +123,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_publish_to_nonexistent_topic() {
-        let bus = EventBus::new();
-        let result = bus.publish("missing_topic", b"ignored");
-        // Should not error, just ignored silently
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_multiple_subscribers_receive() {
         let topic = "multi_subs";
         let bus = EventBus::new();
 
         let mut s1 = bus.subscribe(topic);
         let mut s2 = bus.subscribe(topic);
+        let publisher = bus.publisher(topic);
 
-        bus.publish(topic, b"msg").unwrap();
+        publisher.publish(b"msg").unwrap();
 
         let r1 = s1.next().await.unwrap();
         let r2 = s2.next().await.unwrap();
@@ -161,23 +141,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_topic_removed_when_no_subscribers() {
+    async fn test_topic_removed_when_no_refs() {
         let bus = EventBus::new();
         let topic = "temp_topic";
 
         {
             let mut sub = bus.subscribe(topic);
-            // Topic exists so publish succeeds
-            bus.publish(topic, b"hello").unwrap();
+            let publisher = bus.publisher(topic);
+            publisher.publish(b"hello").unwrap();
             // Assert the message was received
             let r1 = sub.next().await.unwrap();
             assert_eq!(&*r1, b"hello");
             // The topic will be cleaned up here
         }
 
-        // The topic doesn't exist anymore → publish should silently no-op
-        let result = bus.publish(topic, b"nobody_listens");
-        // No err: behaves like non-existent topic
+        let publisher = bus.publisher(topic);
+        let result = publisher.publish(b"nobody_listens");
         assert!(result.is_ok());
     }
 
@@ -187,12 +166,13 @@ mod tests {
         let bus = EventBus::new_with_topic_capacity(1);
 
         let mut sub = bus.subscribe(topic);
+        let publisher = bus.publisher(topic);
 
         // Fill buffer with one message
-        bus.publish(topic, b"A").unwrap();
+        publisher.publish(b"A").unwrap();
 
         // Second publish should overflow → Err(CapacityOverflow)
-        let err = bus.publish(topic, b"B").unwrap_err();
+        let err = publisher.publish(b"B").unwrap_err();
 
         matches!(err, PublishError::CapacityOverflow(_));
 
@@ -206,12 +186,14 @@ mod tests {
 
         let mut sub_a = bus.subscribe("A");
         let mut sub_b = bus.subscribe("B");
+        let publisher_a = bus.publisher("A");
+        let publisher_b = bus.publisher("B");
 
-        bus.publish("A", b"msgA").unwrap();
+        publisher_a.publish(b"msgA").unwrap();
+        publisher_a.publish(b"msgC").unwrap();
 
-        bus.publish("A", b"msgC").unwrap();
-        bus.publish("B", b"msgB").unwrap();
-        bus.publish("B", b"msgD").unwrap();
+        publisher_b.publish(b"msgB").unwrap();
+        publisher_b.publish(b"msgD").unwrap();
 
         let recv_a = sub_a.next().await.unwrap();
         let recv_c = sub_a.next().await.unwrap();
@@ -239,6 +221,7 @@ mod tests {
 
         // Register all subscribers
         let subs: Vec<_> = (0..subscribers).map(|_| bus.subscribe(TOPIC)).collect();
+        let publisher = bus.publisher(TOPIC);
 
         // Run all subscribers concurrently
         let subs_handles = tokio::spawn(async move {
@@ -251,7 +234,7 @@ mod tests {
 
         // Publish all messages
         for msg in &messages {
-            bus.publish(TOPIC, msg.as_ref()).unwrap();
+            publisher.publish(msg.as_ref()).unwrap();
         }
 
         // Wait for all subscribers to complete

@@ -17,7 +17,7 @@ use std::{
 #[derive(Debug)]
 pub struct ObjectRef<K, V>
 where
-    K: Hash + Eq + Clone,
+    K: Hash + Eq,
 {
     parent_ref: Weak<DashMap<K, (AtomicIsize, V)>>,
     key: K,
@@ -35,7 +35,7 @@ where
 
 impl<K, V> Drop for ObjectRef<K, V>
 where
-    K: Hash + Eq + Clone,
+    K: Hash + Eq,
 {
     fn drop(&mut self) {
         let Some(map) = self.parent_ref.upgrade() else {
@@ -56,7 +56,7 @@ where
 #[derive(thiserror::Error, Debug)]
 pub enum InsertError<K, V>
 where
-    K: Hash + Eq + Clone + Debug,
+    K: Hash + Eq + Debug,
 {
     #[error(
         "An entry already exists with the given key: '{0:?}'. You must wait until all existing object references are dropped for the pair to be removed."

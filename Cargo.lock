@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "event_bus_rs"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-broadcast",
  "async-stream",

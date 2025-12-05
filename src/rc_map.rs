@@ -5,10 +5,7 @@ use dashmap::DashMap;
 use std::{
     fmt::Debug,
     hash::Hash,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicIsize, Ordering},
-    },
+    sync::{Arc, Weak},
 };
 
 /// A smart reference around a key value pair.
@@ -19,7 +16,7 @@ pub struct ObjectRef<K, V>
 where
     K: Hash + Eq,
 {
-    parent_ref: Weak<DashMap<K, (AtomicIsize, V)>>,
+    parent_ref: Weak<DashMap<K, (isize, V)>>,
     key: K,
     value: V,
 }
@@ -42,14 +39,8 @@ where
             return;
         };
 
-        map.alter(&self.key, |_, (count, value)| {
-            count.fetch_sub(1, Ordering::Relaxed);
-            (count, value)
-        });
-
-        map.remove_if(&self.key, |_, (count, _)| {
-            count.load(Ordering::Relaxed) <= 0
-        });
+        map.alter(&self.key, |_, (count, value)| (count - 1, value));
+        map.remove_if(&self.key, |_, (count, _)| *count <= 0);
     }
 }
 
@@ -74,7 +65,7 @@ where
 /// When the references counter of a value hits 0, the whole pair is removed from the map.
 #[derive(Clone)]
 pub struct RcMap<K, V> {
-    inner: Arc<DashMap<K, (AtomicIsize, V)>>,
+    inner: Arc<DashMap<K, (isize, V)>>,
 }
 
 impl<K, V> RcMap<K, V>
@@ -89,10 +80,8 @@ where
     }
 
     pub fn get(&self, key: K) -> Option<ObjectRef<K, V>> {
-        self.inner.alter(&key, |_, (count, value)| {
-            count.fetch_add(1, Ordering::Relaxed);
-            (count, value)
-        });
+        self.inner
+            .alter(&key, |_, (count, value)| (count + 1, value));
 
         let option = self.inner.get(&key);
 
@@ -124,9 +113,7 @@ where
             return Err(InsertError::AlreadyExists(key, object_ref));
         }
 
-        let _prev = self
-            .inner
-            .insert(key.clone(), (AtomicIsize::new(1), value.clone()));
+        let _prev = self.inner.insert(key.clone(), (1, value.clone()));
 
         Ok(ObjectRef {
             key,

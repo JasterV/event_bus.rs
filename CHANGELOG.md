@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/JasterV/event_bus.rs/compare/v0.1.6...v0.1.7) - 2025-12-09
+
+### Other
+
+- update code style to remove indentation levels
+
 ## [0.1.6](https://github.com/JasterV/event_bus.rs/compare/v0.1.5...v0.1.6) - 2025-12-05
 
 ### Other

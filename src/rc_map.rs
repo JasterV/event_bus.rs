@@ -83,20 +83,17 @@ where
         self.inner
             .alter(&key, |_, (count, value)| (count + 1, value));
 
-        let option = self.inner.get(&key);
+        let Some(value_ref) = self.inner.get(&key) else {
+            return None;
+        };
 
-        match option {
-            Some(value_ref) => {
-                let (_count, value) = value_ref.value();
+        let (_count, value) = value_ref.value();
 
-                Some(ObjectRef {
-                    key,
-                    parent_ref: Arc::downgrade(&self.inner),
-                    value: value.clone(),
-                })
-            }
-            None => None,
-        }
+        Some(ObjectRef {
+            key,
+            parent_ref: Arc::downgrade(&self.inner),
+            value: value.clone(),
+        })
     }
 
     /// Insert a new pair into the map.

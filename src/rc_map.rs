@@ -83,9 +83,7 @@ where
         self.inner
             .alter(&key, |_, (count, value)| (count + 1, value));
 
-        let Some(value_ref) = self.inner.get(&key) else {
-            return None;
-        };
+        let value_ref = self.inner.get(&key)?;
 
         let (_count, value) = value_ref.value();
 

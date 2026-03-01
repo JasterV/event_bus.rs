@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: rustup default 1.91.1
+      - run: rustup default 1.93.1
       - run: rustup component add clippy rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # ratchet:Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-make
@@ -31,9 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: rustup default 1.91.1
+      - run: rustup default 1.93.1
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # ratchet:Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-make
+      - uses: taiki-e/install-action@cargo-nextest
       - run: cargo make -p ci test
 
   alls-green:

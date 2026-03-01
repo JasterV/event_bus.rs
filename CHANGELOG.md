@@ -16,10 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(deps)* bump tokio from 1.48.0 to 1.49.0 ([#15](https://github.com/JasterV/event_bus.rs/pull/15))
 - *(deps)* bump test-strategy from 0.4.3 to 0.4.5 ([#19](https://github.com/JasterV/event_bus.rs/pull/19))
 - *(deps)* bump futures from 0.3.31 to 0.3.32 ([#20](https://github.com/JasterV/event_bus.rs/pull/20))
-- update rust version & nextest installation
-- update cargo-deny version
-- fix a clippy issue
-- update code style to remove indentation levels
+- [chore]: update rust version & CI
+- [refactor]: update code style to remove indentation levels
 
 ## [0.1.6](https://github.com/JasterV/event_bus.rs/compare/v0.1.5...v0.1.6) - 2025-12-05
 

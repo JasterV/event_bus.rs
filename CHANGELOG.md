@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/JasterV/event_bus.rs/compare/v0.1.6...v0.1.7) - 2026-03-01
+
+### Other
+
+- *(deps)* bump proptest from 1.9.0 to 1.10.0 ([#18](https://github.com/JasterV/event_bus.rs/pull/18))
+- *(deps)* bump thiserror from 2.0.17 to 2.0.18 ([#16](https://github.com/JasterV/event_bus.rs/pull/16))
+- *(deps)* bump tokio from 1.48.0 to 1.49.0 ([#15](https://github.com/JasterV/event_bus.rs/pull/15))
+- *(deps)* bump test-strategy from 0.4.3 to 0.4.5 ([#19](https://github.com/JasterV/event_bus.rs/pull/19))
+- *(deps)* bump futures from 0.3.31 to 0.3.32 ([#20](https://github.com/JasterV/event_bus.rs/pull/20))
+- [chore]: update rust version & CI
+- [refactor]: update code style to remove indentation levels
+
 ## [0.1.6](https://github.com/JasterV/event_bus.rs/compare/v0.1.5...v0.1.6) - 2025-12-05
 
 ### Other
